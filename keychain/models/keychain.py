@@ -7,15 +7,9 @@ import logging
 import json
 
 from openerp import models, fields, api
-from openerp.exceptions import ValidationError
+from openerp.exceptions import ValidationError, UserError
 from openerp.tools.config import config
 from openerp.tools.translate import _
-
-try:
-    from openerp.addons.server_environment import serv_config
-except ImportError:  # server_environment not installed or configured
-    serv_config = None
-
 
 _logger = logging.getLogger(__name__)
 
@@ -46,7 +40,9 @@ class KeychainAccount(models.Model):
     technical_name = fields.Char(
         required=True,
         help="Technical name. Must be unique")
-    namespace = fields.Selection([], help="Type of account", required=True)
+    namespace = fields.Selection(selection=[],
+                                 help="Type of account",
+                                 required=True)
     environment = fields.Char(
         required=False,
         help="'prod', 'dev', etc. or empty (for all)"
@@ -70,8 +66,8 @@ class KeychainAccount(models.Model):
         """Password in clear text."""
         try:
             return self._decode_password(self.password)
-        except Warning as warn:
-            raise Warning(_(
+        except UserError as warn:
+            raise UserError(_(
                 "%s \n"
                 "Account: %s %s %s " % (
                     warn,
@@ -120,11 +116,58 @@ class KeychainAccount(models.Model):
 
     @implemented_by_keychain
     def _validate_data(self, data):
+        """Ensure data is valid according to the namespace.
+
+        How to use:
+        - Create a method prefixed with your namespace
+        - Put your validation logic inside
+        - Return true if data is valid for your usage
+
+        This method will be called on write().
+        If false is returned an user error will be raised.
+
+        Example:
+        def _hereismynamspace_validate_data():
+            return len(data.get('some_param', '') > 6)
+
+        @params data dict
+        @returns boolean
+        """
         pass
+
+    def _default_validate_data(self, data):
+        """Default validation.
+
+        By default says data is always valid.
+        See _validata_data() for more information.
+        """
+        return True
 
     @implemented_by_keychain
     def _init_data(self):
+        """Initialize data field.
+
+        How to use:
+        - Create a method prefixed with your namespace
+        - Return a dict with the keys and may be default
+        values your expect.
+
+        This method will be called on write().
+
+        Example:
+        def _hereismynamspace_init_data():
+            return { 'some_param': 'default_value' }
+
+        @returns dict
+        """
         pass
+
+    def _default_init_data(self):
+        """Default initialization.
+
+        See _init_data() for more information.
+        """
+        return {}
 
     @staticmethod
     def _retrieve_env():
@@ -165,7 +208,7 @@ class KeychainAccount(models.Model):
         try:
             return unicode(cipher.decrypt(str(data)), 'UTF-8')
         except InvalidToken:
-            raise Warning(_(
+            raise UserError(_(
                 "Password has been encrypted with a different "
                 "key. Unless you can recover the previous key, "
                 "this password is unreadable."
@@ -178,7 +221,7 @@ class KeychainAccount(models.Model):
         force_env = name of the env key.
         Useful for encoding against one precise env
         """
-        def _get_keys_main_config(envs):
+        def _get_keys(envs):
             suffixes = [
                 '_%s' % env if env else ''
                 for env in envs]  # ('_dev', '')
@@ -193,32 +236,13 @@ class KeychainAccount(models.Model):
                 if key and len(key) > 0  # remove False values
             ]
 
-        def _get_keys_serv_config(envs):
-            keys_name = [
-                env for env in envs if env]  # ignores empty env
-            keys_str = [
-                serv_config.get('keychain', key)
-                for key in keys_name]  # fetch from config
-            return [
-                Fernet(key) for key in keys_str  # build Fernet object
-                if key and len(key) > 0  # remove False values
-            ]
-
-        keys = []
-
         if force_env:
             envs = [force_env]
         else:
             envs = cls._retrieve_env()  # ex: ('dev', False)
-
-        if serv_config and serv_config.has_section('keychain'):
-            keys = _get_keys_serv_config(envs)
-
-        if not keys:
-            keys = _get_keys_main_config(envs)
-
+        keys = _get_keys(envs)
         if len(keys) == 0:
-            raise Warning(_(
+            raise UserError(_(
                 "No 'keychain_key_%s' entries found in config file. "
                 "Use a key similar to: %s" % (envs[0], Fernet.generate_key())
             ))
